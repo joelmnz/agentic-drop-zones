@@ -46,18 +46,32 @@ FILE_PATH_PLACEHOLDER = "[[FILE_PATH]]"
 
 
 # Environment variable checks
-def check_environment_variables():
+def check_environment_variables(config=None):
     """Check for required environment variables at startup."""
-    required_vars = {
-        "ANTHROPIC_API_KEY": "Required for Claude Code SDK authentication",
-        "CLAUDE_CODE_PATH": "Required path to Claude CLI executable",
-    }
-
+    # Determine which agents are being used
+    agents_used = set()
+    if config and hasattr(config, 'drop_zones'):
+        for drop_zone in config.drop_zones:
+            agent_value = drop_zone.agent.value if hasattr(drop_zone.agent, 'value') else str(drop_zone.agent)
+            agents_used.add(agent_value)
+    
+    # Check if Claude Code is being used
+    claude_code_used = "claude_code" in agents_used
+    
+    required_vars = {}
     optional_vars = {
         "REPLICATE_API_TOKEN": "Optional - needed for image generation/editing (won't be able to generate images without it)",
         "OPENCODE_CLI_PATH": "Optional - path to OpenCode CLI executable (defaults to 'opencode')",
     }
-
+    
+    # Only require ANTHROPIC_API_KEY if Claude Code is being used
+    if claude_code_used:
+        required_vars["ANTHROPIC_API_KEY"] = "Required for Claude Code SDK authentication"
+        required_vars["CLAUDE_CODE_PATH"] = "Required path to Claude CLI executable"
+    else:
+        optional_vars["ANTHROPIC_API_KEY"] = "Optional - only needed if using Claude Code agent"
+        optional_vars["CLAUDE_CODE_PATH"] = "Optional - only needed if using Claude Code agent"
+    
     missing_required = []
 
     # Check required variables
@@ -855,10 +869,33 @@ async def main():
     console.print("[bold cyan]      🚀 Agentic Drop Zone 🚀[/bold cyan]")
     console.print("[bold cyan]═══════════════════════════════════════[/bold cyan]\n")
 
-    # Check environment variables
-    check_environment_variables()
+    # Load configuration first to determine which agents are used
+    config_file = Path("drops.yaml")
+    try:
+        if not config_file.exists():
+            console.print(f"[bold red]❌ Configuration file not found: {config_file}[/bold red]")
+            raise FileNotFoundError(f"Configuration file not found: {config_file}")
 
-    drop_zone = AgenticDropZone(config_file=Path("drops.yaml"))
+        with open(config_file, "r") as f:
+            data = yaml.safe_load(f)
+
+        config = DropsConfig(**data)
+        console.print(
+            f"[green]✅ Loaded configuration from {config_file}[/green]"
+        )
+        console.print(
+            f"[cyan]   Found {len(config.drop_zones)} drop zone(s)[/cyan]"
+        )
+    except Exception as e:
+        console.print(f"[bold red]❌ Error loading configuration: {e}[/bold red]")
+        raise
+
+    # Check environment variables based on configured agents
+    check_environment_variables(config)
+
+    drop_zone = AgenticDropZone(config_file=config_file)
+    # Set the pre-loaded config to avoid loading it again
+    drop_zone.config = config
     await drop_zone.run()
 
 
