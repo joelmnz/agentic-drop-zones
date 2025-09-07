@@ -54,7 +54,8 @@ def check_environment_variables():
     }
 
     optional_vars = {
-        "REPLICATE_API_TOKEN": "Optional - needed for image generation/editing (won't be able to generate images without it)"
+        "REPLICATE_API_TOKEN": "Optional - needed for image generation/editing (won't be able to generate images without it)",
+        "OPENCODE_CLI_PATH": "Optional - path to OpenCode CLI executable (defaults to 'opencode')",
     }
 
     missing_required = []
@@ -114,6 +115,7 @@ class AgentType(str, Enum):
     CLAUDE_CODE = "claude_code"
     GEMINI_CLI = "gemini_cli"
     CODEX_CLI = "codex_cli"
+    OPENCODE = "opencode"
 
 
 class PromptArgs(BaseModel):
@@ -424,6 +426,159 @@ class Agents:
         console.print()
 
     @staticmethod
+    async def prompt_opencode(args: PromptArgs) -> None:
+        """Process a file using OpenCode CLI."""
+        # Build full prompt using the build_prompt method
+        full_prompt = Agents.build_prompt(args.reusable_prompt, args.file_path)
+
+        console.print(f"[magenta]ℹ️  Processing prompt with OpenCode CLI...[/magenta]")
+        if args.model:
+            console.print(f"[dim]   Model: {args.model}[/dim]")
+
+        # Get CLI path from environment or use default
+        opencode_path = os.getenv("OPENCODE_CLI_PATH", "opencode")
+
+        # Build command with correct OpenCode CLI structure
+        cmd = [
+            opencode_path,
+            "run",  # Use the 'run' subcommand for non-interactive execution
+        ]
+        
+        # Add model flag if specified (expects provider/model format)
+        if args.model:
+            cmd.extend(["--model", args.model])
+        
+        # Add the prompt as the final argument
+        cmd.append(full_prompt)
+
+        console.print(f"[dim]   Command: {' '.join(cmd[:3])}{'...' if len(cmd) > 3 else ''}[/dim]")
+
+        try:
+            # Create subprocess with asyncio
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=os.environ.copy()  # Pass environment variables
+            )
+
+            # Prepare for streaming display
+            file_name = Path(args.file_path).name
+            zone_workflow = (
+                f"{args.zone_name} Workflow" if args.zone_name else "Workflow"
+            )
+            panel_color = args.zone_color or "magenta"
+            has_output = False
+
+            async def read_stream(stream, is_stderr=False):
+                """Read and display stream output line by line."""
+                nonlocal has_output
+                while True:
+                    line = await stream.readline()
+                    if not line:
+                        break
+                    
+                    decoded = line.decode('utf-8', errors='replace').rstrip()
+                    if decoded:  # Only process non-empty lines
+                        has_output = True
+                        # Print each line in its own panel
+                        console.print(
+                            Panel(
+                                Text(decoded),
+                                title=f"[bold {panel_color}]🤖 OpenCode CLI • {zone_workflow}[/bold {panel_color}]",
+                                subtitle=f"[dim]{file_name}[/dim]",
+                                border_style=panel_color,
+                                expand=False,
+                                padding=(1, 2),
+                            )
+                        )
+
+            # Handle both streams concurrently
+            await asyncio.gather(
+                read_stream(process.stdout, is_stderr=False),
+                read_stream(process.stderr, is_stderr=True)
+            )
+
+            # Wait for process to complete
+            return_code = await process.wait()
+
+            # Print completion status with more specific error messages
+            if return_code != 0:
+                error_msg = f"OpenCode CLI exited with code {return_code}"
+                if return_code == 1:
+                    error_msg += " (General error - check your configuration)"
+                elif return_code == 2:
+                    error_msg += " (Invalid arguments)"
+                elif return_code == 127:
+                    error_msg += " (Command not found)"
+                elif return_code == 130:
+                    error_msg += " (Process interrupted)"
+
+                console.print(f"\n[yellow]⚠️ {error_msg}[/yellow]")
+
+                # Try to read any error output from stderr
+                if process.stderr:
+                    try:
+                        stderr_output = await process.stderr.read()
+                        if stderr_output:
+                            stderr_text = stderr_output.decode('utf-8', errors='replace').strip()
+                            if stderr_text:
+                                console.print(f"[dim]Error details: {stderr_text}[/dim]")
+                    except Exception:
+                        pass  # Ignore errors when trying to read stderr
+
+            # If no output was received, show a message
+            if not has_output:
+                console.print(
+                    Panel(
+                        "[yellow]No output received from OpenCode CLI[/yellow]",
+                        title=f"[bold yellow]🤖 OpenCode CLI • {zone_workflow}[/bold yellow]",
+                        subtitle=f"[dim]{file_name}[/dim]",
+                        border_style="yellow",
+                        expand=False,
+                        padding=(1, 2),
+                    )
+                )
+
+        except FileNotFoundError:
+            console.print(
+                f"[bold red]❌ OpenCode CLI not found at '{opencode_path}'[/bold red]"
+            )
+            console.print(
+                "[yellow]Please install OpenCode CLI: npm install -g opencode-ai[/yellow]"
+            )
+            console.print(
+                "[yellow]Or use the install script: curl -fsSL https://opencode.ai/install | bash[/yellow]"
+            )
+            console.print(
+                "[dim]Or set OPENCODE_CLI_PATH environment variable to the correct path[/dim]"
+            )
+        except asyncio.TimeoutError:
+            console.print(
+                f"[bold red]❌ OpenCode CLI timed out[/bold red]"
+            )
+            console.print(
+                "[yellow]The operation took too long to complete. Try with a simpler prompt or check your network connection.[/yellow]"
+            )
+        except PermissionError:
+            console.print(
+                f"[bold red]❌ Permission denied running OpenCode CLI[/bold red]"
+            )
+            console.print(
+                f"[yellow]Check that '{opencode_path}' has execute permissions[/yellow]"
+            )
+        except Exception as e:
+            error_str = str(e)
+            if "model" in error_str.lower():
+                console.print(f"[bold red]❌ OpenCode model error: {e}[/bold red]")
+                console.print("[yellow]Check that your model format is correct (provider/model)[/yellow]")
+                console.print("[dim]Example: anthropic/claude-sonnet-4-20250514[/dim]")
+            else:
+                console.print(f"[bold red]❌ Error running OpenCode CLI: {e}[/bold red]")
+
+        console.print()
+
+    @staticmethod
     async def prompt_codex_cli(args: PromptArgs) -> None:
         """Process a file using Codex CLI."""
         # Build full prompt using the build_prompt method
@@ -440,6 +595,8 @@ class Agents:
                 await Agents.prompt_claude_code(args)
             elif agent == AgentType.GEMINI_CLI:
                 await Agents.prompt_gemini_cli(args)
+            elif agent == AgentType.OPENCODE:
+                await Agents.prompt_opencode(args)
             elif agent == AgentType.CODEX_CLI:
                 await Agents.prompt_codex_cli(args)
             else:

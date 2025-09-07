@@ -82,3 +82,13 @@ drop_zones:
     model: "sonnet"
     color: "green"
     create_zone_dir_if_not_exists: true
+
+  - name: "OpenCode Echo Drop Zone"  # Test zone for OpenCode CLI
+    file_patterns: ["*.txt"]  # File patterns to watch
+    reusable_prompt: ".claude/commands/echo.md"  # Same echo prompt
+    zone_dirs: ["agentic_drop_zone/opencode_echo_zone"]  # OpenCode-specific directory
+    events: ["created"]  # Trigger on file creation
+    agent: "opencode"  # Use OpenCode CLI agent
+    model: "github-copilot/gpt-4.1"  # Use provider/model format
+    color: "magenta"  # Magenta for OpenCode
+    create_zone_dir_if_not_exists: true  # Auto-create directory
